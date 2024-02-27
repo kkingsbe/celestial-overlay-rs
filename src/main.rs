@@ -1,29 +1,34 @@
 #![windows_subsystem = "windows"] // to turn off console.
 
 mod photomanager;
+mod spaceweathermanager;
 extern crate reqwest;
 
 use photomanager::PhotoManager;
+use spaceweathermanager::{SpaceWeatherManager, WeatherReport};
 
 use egui_commonmark::*;
 use egui::Align2;
 use egui_commonmark::CommonMarkCache;
 use egui_overlay::EguiOverlay;
+
 #[cfg(feature = "three_d")]
 use egui_render_three_d::ThreeDBackend as DefaultGfxBackend;
 #[cfg(feature = "wgpu")]
 use egui_render_wgpu::WgpuBackend as DefaultGfxBackend;
 
 fn main() {
-    let mgr = PhotoManager::new(std::time::Duration::from_secs(60), std::time::Duration::from_secs(60 * 60)); //1hr
-    egui_overlay::start(CelestialOverlay { screen_width: 1920, screen_height: 1030, initialized: false, photo_manager: mgr });
+    let photo_manager = PhotoManager::new(std::time::Duration::from_secs(60 * 10), std::time::Duration::from_secs(60 * 60)); //1hr
+    let space_weather_manager = SpaceWeatherManager::new(std::time::Duration::from_secs(60 * 60)); //1hr
+    egui_overlay::start(CelestialOverlay { screen_width: 1920, screen_height: 1030, initialized: false, photo_manager, space_weather_manager });
 }
 
 pub struct CelestialOverlay {
     pub screen_width: i32,
     pub screen_height: i32,
     pub initialized: bool,
-    pub photo_manager: PhotoManager
+    pub photo_manager: PhotoManager,
+    pub space_weather_manager: SpaceWeatherManager,
 }
 impl EguiOverlay for CelestialOverlay {
     fn gui_run(
@@ -34,26 +39,18 @@ impl EguiOverlay for CelestialOverlay {
     ) {
         self.photo_manager.next_if_ready();
         self.photo_manager.refresh_if_ready();
+
+        self.space_weather_manager.refresh_if_ready();
         
         // just some controls to show how you can use glfw_backend
-        egui::Window::new("Space Weather Report").anchor(Align2::RIGHT_BOTTOM, [0.0,0.0]).show(egui_context, |ui| {
-            // sometimes, you want to see the borders to understand where the overlay is.
-            /*
-            let mut borders = glfw_backend.window.is_decorated();
-            if ui.checkbox(&mut borders, "window borders").changed() {
-                glfw_backend.window.set_decorated(borders);
-            }
-            */
+        egui::Window::new("Celestial Overlay").anchor(Align2::RIGHT_BOTTOM, [0.0,0.0]).show(egui_context, |ui| {
+            self.space_weather_manager.weather_report.as_mut().unwrap().next_if_ready(&egui_context);
 
-            // how to change size.
-            // WARNING: don't use drag value, because window size changing while dragging ui messes things up.
             let size = glfw_backend.window_size_logical;
             let changed = false;
             if changed {
                 glfw_backend.set_window_size(size);
             }
-            // how to change size.
-            // WARNING: don't use drag value, because window size changing while dragging ui messes things up.
 
             let mut x_changed = false;
             let mut y_changed = false;
@@ -62,15 +59,35 @@ impl EguiOverlay for CelestialOverlay {
             let mut temp_screen_height = self.screen_height.to_string();
 
             let mut cache = CommonMarkCache::default();
-            CommonMarkViewer::new("viewer").show(ui, &mut cache, "## Message Type: Space Weather Notification - Interplanetary Shock\n ## Summary:\n\nSignificant interplanetary shock detected by DSCOVR at L1 at 2024-02-24T16:16Z. \n\nThe shock is likely caused by CME with ID 2024-02-21T18:36:00-CME-001 (see notification 20240222-AL-003). Some magnetospheric compression and possible geomagnetic storm expected.\n\nActivity ID: 2024-02-24T16:16:00-IPS-001.\n\n## Notes: \n\nThis interplanetary shock arrival may possibly have additional influence from the start of a coronal hole high speed stream due to a coronal hole centered at S20W20 at the time of the arrival, but whose most western edge was observed in UV imagery to have reached S15W45 at the time of the arrival. Analysis is ongoing. \n\n\n");
+            let weather_available = self.space_weather_manager.weather_report.is_some();
+            if weather_available {
+                let report = self.space_weather_manager.weather_report.as_mut().unwrap();
+                ui.label("Message Type: ".to_string() + &report.message_type);
+                ui.label("Time: ".to_string() + &report.time);
+                if report.active_image_handle.is_some() {
+                    ui.add(egui::Image::new(report.active_image_handle.as_ref().unwrap()).max_width(400.));
+                }
+                egui::ScrollArea::vertical().max_height(200.).show(ui, |ui| {
+                    CommonMarkViewer::new("viewer").show(ui, &mut cache, &report.message);
+                });
+            } else {
+                ui.label("No space weather report available.");
+            }
 
-            let mut next_clicked = false;
-            ui.horizontal(|ui| {
-                next_clicked = ui.button("Next").on_hover_text("Next Image").clicked();
-            });
+            if self.photo_manager.photos.len() == 0 {
+                ui.label("No photos available.");
+            } else {
+                let mut next_clicked = false;
 
-            if next_clicked {
-                self.photo_manager.next();
+                ui.add_space(10.);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                    ui.label("Image: ".to_string() + &self.photo_manager.photos[self.photo_manager.currrent_img].name);
+                    next_clicked = ui.button("Next").on_hover_text("Next Image").clicked();
+                });
+
+                if next_clicked {
+                    self.photo_manager.next();
+                }
             }
 
             ui.horizontal(|ui| {
@@ -103,6 +120,7 @@ impl EguiOverlay for CelestialOverlay {
 
             if !self.initialized {
                 self.initialized = true;
+                self.space_weather_manager.weather_report.as_mut().unwrap().next_image(egui_context);
                 glfw_backend.window.set_size(self.screen_width, self.screen_height);
             }
 
